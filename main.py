@@ -1,6 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import requests
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 import pandas as pd
 import pvlib
 import numpy as np
@@ -34,7 +36,7 @@ def get_nir_data():
     params = {"Authorization": CWA_API_KEY, "format": "JSON", "StationName": station_names}
     
     try:
-        response = requests.get(url, params=params)
+        response = requests.get(url, params=params, verify=False)
         response.raise_for_status()
         stations = response.json().get("records", {}).get("Station", [])
         
