@@ -6,7 +6,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 import pandas as pd
 import pvlib
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 app = FastAPI()
 
@@ -76,7 +76,11 @@ def get_nir_data():
                 "pwv": round(pwv, 2),
                 "nir": round(nir_total_w_m2, 2)
             })
-        return {"update_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "data": results}
+        # 設定台灣時區 (UTC+8)
+        tw_tz = timezone(timedelta(hours=8))
+        tw_time = datetime.now(tw_tz).strftime("%Y-%m-%d %H:%M:%S")
+        
+        return {"update_time": tw_time, "data": results}
     except Exception as e:
         return {"error": str(e)}
 
