@@ -54,23 +54,21 @@ def get_nir_data():
             
             lat, lon = SIX_CITIES[st_name]["lat"], SIX_CITIES[st_name]["lon"]
             pwv = pvlib.atmosphere.gueymard94_pw(temp, humidity)
-            solpos = pvlib.solarposition.get_solarposition(pd.DatetimeIndex([obs_time]), lat, lon)
+            
+            time_index = pd.DatetimeIndex([obs_time])
+            solpos = pvlib.solarposition.get_solarposition(time_index, lat, lon)
             zenith = solpos['apparent_zenith'].iloc[0]
+            doy = time_index.dayofyear[0] # <--- ⚠️ 新增：算出今天是今年的第幾天
             
             if zenith > 90:
                 nir_total_w_m2 = 0.0
             else:
                 airmass = pvlib.atmosphere.get_relative_airmass(zenith)
                 spectra = pvlib.spectrum.spectrl2(
-                    apparent_zenith=zenith, 
-                    aoi=zenith, 
-                    surface_tilt=0, 
-                    ground_albedo=0.2,  # <--- ⚠️ 新增這個地面反射率參數
-                    surface_pressure=pressure * 100, 
-                    relative_airmass=airmass, 
-                    precipitable_water=pwv,
-                    ozone=0.34, 
-                    aerosol_turbidity_500nm=0.1
+                    apparent_zenith=zenith, aoi=zenith, surface_tilt=0, ground_albedo=0.2,
+                    surface_pressure=pressure * 100, relative_airmass=airmass, precipitable_water=pwv,
+                    ozone=0.34, aerosol_turbidity_500nm=0.1,
+                    dayofyear=doy # <--- ⚠️ 新增：把天數餵給光譜模型
                 )
                 mask = (spectra['wavelength'] >= 700) & (spectra['wavelength'] <= 2500)
                 nir_total_w_m2 = np.trapz(spectra['dni'][mask].flatten(), spectra['wavelength'][mask])
