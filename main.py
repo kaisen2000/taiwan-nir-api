@@ -31,6 +31,21 @@ SIX_CITIES = {
 CWA_API_KEY = "CWA-0145ECC9-2CD1-40C0-BC42-C11F38BF7D09"
 
 def get_nir_data():
+    # 🌟 節能優化：設定台灣時區 (UTC+8) 並取得現在時間與小時
+    tw_tz = timezone(timedelta(hours=8))
+    now = datetime.now(tw_tz)
+    current_hour = now.hour
+
+    # 🌟 節能優化：判斷是否為夜間休眠時段 (晚上 21:00 到凌晨 04:59 不進行運算)
+    if not (5 <= current_hour <= 20):
+        return {
+            "status": "night_mode",
+            "update_time": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "data": [],
+            "message": "目前為夜間休眠時段，API 停止運算以節省資源。"
+        }
+
+    # --- 以下為原本的日照運算邏輯 (05:00 - 20:00 才會走到這裡) ---
     url = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/O-A0001-001"
     station_names = ",".join(SIX_CITIES.keys())
     params = {"Authorization": CWA_API_KEY, "format": "JSON", "StationName": station_names}
@@ -58,7 +73,7 @@ def get_nir_data():
             time_index = pd.DatetimeIndex([obs_time])
             solpos = pvlib.solarposition.get_solarposition(time_index, lat, lon)
             zenith = solpos['apparent_zenith'].iloc[0]
-            doy = time_index.dayofyear[0] # <--- ⚠️ 新增：算出今天是今年的第幾天
+            doy = time_index.dayofyear[0] # 算出今天是今年的第幾天
             
             if zenith > 90:
                 nir_total_w_m2 = 0.0
@@ -68,7 +83,7 @@ def get_nir_data():
                     apparent_zenith=zenith, aoi=zenith, surface_tilt=0, ground_albedo=0.2,
                     surface_pressure=pressure * 100, relative_airmass=airmass, precipitable_water=pwv,
                     ozone=0.34, aerosol_turbidity_500nm=0.1,
-                    dayofyear=doy # <--- ⚠️ 新增：把天數餵給光譜模型
+                    dayofyear=doy # 把天數餵給光譜模型
                 )
                 mask = (spectra['wavelength'] >= 700) & (spectra['wavelength'] <= 2500)
                 nir_total_w_m2 = np.trapezoid(spectra['dni'][mask].flatten(), spectra['wavelength'][mask])
@@ -80,11 +95,12 @@ def get_nir_data():
                 "pwv": round(pwv, 2),
                 "nir": round(nir_total_w_m2, 2)
             })
-        # 設定台灣時區 (UTC+8)
-        tw_tz = timezone(timedelta(hours=8))
-        tw_time = datetime.now(tw_tz).strftime("%Y-%m-%d %H:%M:%S")
-        
-        return {"update_time": tw_time, "data": results}
+            
+        return {
+            "status": "active",
+            "update_time": now.strftime("%Y-%m-%d %H:%M:%S"), 
+            "data": results
+        }
     except Exception as e:
         return {"error": str(e)}
 
