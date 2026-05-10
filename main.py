@@ -71,7 +71,7 @@ def get_nir_data():
                     dayofyear=doy # <--- ⚠️ 新增：把天數餵給光譜模型
                 )
                 mask = (spectra['wavelength'] >= 700) & (spectra['wavelength'] <= 2500)
-                nir_total_w_m2 = np.trapz(spectra['dni'][mask].flatten(), spectra['wavelength'][mask])
+                nir_total_w_m2 = np.trapezoid(spectra['dni'][mask].flatten(), spectra['wavelength'][mask])
             
             results.append({
                 "city": SIX_CITIES[st_name]["display"], # 傳送給網頁時，換回漂亮的「臺北市」
