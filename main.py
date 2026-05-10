@@ -62,9 +62,15 @@ def get_nir_data():
             else:
                 airmass = pvlib.atmosphere.get_relative_airmass(zenith)
                 spectra = pvlib.spectrum.spectrl2(
-                    apparent_zenith=zenith, aoi=zenith, surface_tilt=0, 
-                    surface_pressure=pressure * 100, relative_airmass=airmass, precipitable_water=pwv,
-                    ozone=0.34, aerosol_turbidity_500nm=0.1
+                    apparent_zenith=zenith, 
+                    aoi=zenith, 
+                    surface_tilt=0, 
+                    ground_albedo=0.2,  # <--- ⚠️ 新增這個地面反射率參數
+                    surface_pressure=pressure * 100, 
+                    relative_airmass=airmass, 
+                    precipitable_water=pwv,
+                    ozone=0.34, 
+                    aerosol_turbidity_500nm=0.1
                 )
                 mask = (spectra['wavelength'] >= 700) & (spectra['wavelength'] <= 2500)
                 nir_total_w_m2 = np.trapz(spectra['dni'][mask].flatten(), spectra['wavelength'][mask])
