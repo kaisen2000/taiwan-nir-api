@@ -62,7 +62,7 @@ def get_nir_data():
             else:
                 airmass = pvlib.atmosphere.get_relative_airmass(zenith)
                 spectra = pvlib.spectrum.spectrl2(
-                    apparent_zenith=zenith, aoi=zenith, surface_tilt=0, surface_azimuth=180,
+                    apparent_zenith=zenith, aoi=zenith, surface_tilt=0, 
                     surface_pressure=pressure * 100, relative_airmass=airmass, precipitable_water=pwv,
                     ozone=0.34, aerosol_turbidity_500nm=0.1
                 )
