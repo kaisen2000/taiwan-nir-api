@@ -18,7 +18,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 🌟 全台 22 縣市測站配置 (含經緯度與建議反射率)
+# 🌟 修正後的縣市對應表：確保名稱與氣象署 API 完全一致
 ALL_REGIONS = {
     "基隆": {"display": "基隆市", "lat": 25.133, "lon": 121.741, "albedo": 0.15},
     "臺北": {"display": "臺北市", "lat": 25.037, "lon": 121.514, "albedo": 0.15},
@@ -27,9 +27,9 @@ ALL_REGIONS = {
     "新竹": {"display": "新竹縣", "lat": 24.827, "lon": 121.012, "albedo": 0.15},
     "苗栗": {"display": "苗栗縣", "lat": 24.565, "lon": 120.820, "albedo": 0.18},
     "臺中": {"display": "臺中市", "lat": 24.145, "lon": 120.683, "albedo": 0.18},
-    "彰化": {"display": "彰化縣", "lat": 24.080, "lon": 120.539, "albedo": 0.20},
+    "彰化": {"display": "彰化縣", "lat": 24.080, "lon": 120.539, "albedo": 0.20}, # 修正名稱
     "南投": {"display": "南投縣", "lat": 23.903, "lon": 120.684, "albedo": 0.20},
-    "雲林": {"display": "雲林縣", "lat": 23.709, "lon": 120.431, "albedo": 0.20},
+    "雲林": {"display": "雲林縣", "lat": 23.709, "lon": 120.431, "albedo": 0.20}, # 修正名稱
     "嘉義": {"display": "嘉義縣", "lat": 23.451, "lon": 120.255, "albedo": 0.20},
     "臺南": {"display": "臺南市", "lat": 22.993, "lon": 120.204, "albedo": 0.20},
     "高雄": {"display": "高雄市", "lat": 22.566, "lon": 120.316, "albedo": 0.18},
@@ -39,60 +39,71 @@ ALL_REGIONS = {
     "臺東": {"display": "臺東縣", "lat": 22.752, "lon": 121.144, "albedo": 0.18},
     "澎湖": {"display": "澎湖縣", "lat": 23.565, "lon": 119.563, "albedo": 0.20},
     "金門": {"display": "金門縣", "lat": 24.432, "lon": 118.312, "albedo": 0.20},
-    "馬祖": {"display": "連江縣", "lat": 26.151, "lon": 119.936, "albedo": 0.20}
+    "連江": {"display": "連江縣", "lat": 26.151, "lon": 119.936, "albedo": 0.20}
 }
 
 CWA_API_KEY = "CWA-0145ECC9-2CD1-40C0-BC42-C11F38BF7D09"
 MOENV_API_KEY = "6eb2e439-39c7-4e22-ae2c-bd1fcff8959b"
 
+CACHE_DATA = None
+CACHE_TIME = None
+
 def get_nir_data():
+    global CACHE_DATA, CACHE_TIME
     tw_tz = timezone(timedelta(hours=8))
     now = datetime.now(tw_tz)
-    current_hour = now.hour
-
-    if not (5 <= current_hour <= 20):
+    
+    if not (5 <= now.hour <= 20):
         return {"status": "night_mode", "update_time": now.strftime("%Y-%m-%d %H:%M:%S"), "data": []}
 
-    # 抓取 PM2.5 用於大氣混濁度
+    if CACHE_DATA and CACHE_TIME and (now - CACHE_TIME).total_seconds() < 1800:
+        return CACHE_DATA
+
     pm25_map = {}
     try:
-        moenv_res = requests.get(f"https://data.moenv.gov.tw/api/v2/aqx_p_432?api_key={MOENV_API_KEY}&limit=100&format=JSON", timeout=5, verify=False)
-        if moenv_res.status_code == 200:
-            for r in moenv_res.json().get("records", []):
-                county = r.get("county")
-                val = r.get("pm2.5")
-                if county and val:
-                    if county not in pm25_map: pm25_map[county] = []
-                    pm25_map[county].append(float(val))
+        res = requests.get(f"https://data.moenv.gov.tw/api/v2/aqx_p_432?api_key={MOENV_API_KEY}&limit=100&format=JSON", timeout=5, verify=False)
+        if res.status_code == 200:
+            for r in res.json().get("records", []):
+                if r.get("county") and r.get("pm2.5"):
+                    c = r.get("county")
+                    if c not in pm25_map: pm25_map[c] = []
+                    pm25_map[c].append(float(r.get("pm2.5")))
             pm25_map = {c: sum(v)/len(v) for c, v in pm25_map.items()}
     except: pass
 
-    # 抓取氣象實況
     url = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/O-A0001-001"
-    station_names = ",".join(ALL_REGIONS.keys())
     try:
-        response = requests.get(url, params={"Authorization": CWA_API_KEY, "format": "JSON", "StationName": station_names}, verify=False)
+        response = requests.get(url, params={"Authorization": CWA_API_KEY, "format": "JSON"}, verify=False)
         stations = response.json().get("records", {}).get("Station", [])
         
         results = []
         for station in stations:
-            st_name = station.get("StationName")
-            if st_name not in ALL_REGIONS: continue
+            raw_name = station.get("StationName")
+            # 🌟 關鍵修正：名稱匹配邏輯優化
+            match_key = None
+            for key in ALL_REGIONS.keys():
+                if key in raw_name:
+                    match_key = key
+                    break
             
-            cfg = ALL_REGIONS[st_name]
+            if not match_key: continue
+            
+            cfg = ALL_REGIONS[match_key]
+            # 避免重複抓取同一縣市的多個測站
+            if any(r['city'] == cfg['display'] for r in results): continue
+
             elements = station.get("WeatherElement", {})
             temp = float(elements.get("AirTemperature", 0))
             humidity = float(elements.get("RelativeHumidity", 0))
-            rain = float(elements.get("Now", {}).get("Precipitation", 0.0))
             weather = elements.get("Weather", "")
-            
-            # 透光率折算
-            trans = 1.0
-            if rain > 0 or "雨" in weather: trans = 0.2
-            elif "陰" in weather: trans = 0.4
-            elif "多雲" in weather: trans = 0.7
+            rain = float(elements.get("Now", {}).get("Precipitation", 0.0))
 
-            # 物理計算
+            # 透光率優化模型
+            trans = 1.0
+            if rain > 0 or "雨" in weather: trans = 0.25
+            elif "陰" in weather: trans = 0.45
+            elif "多雲" in weather: trans = 0.75
+
             pwv = pvlib.atmosphere.gueymard94_pw(temp, humidity)
             time_idx = pd.DatetimeIndex([station.get("ObsTime", {}).get("DateTime")])
             solpos = pvlib.solarposition.get_solarposition(time_idx, cfg["lat"], cfg["lon"])
@@ -100,7 +111,7 @@ def get_nir_data():
             
             if zenith > 90: nir = 0.0
             else:
-                pm25 = pm25_map.get(cfg["display"], 15.0)
+                pm25 = pm25_map.get(cfg["display"].replace("臺","台"), 15.0)
                 turb = 0.1 + (pm25 * 0.005)
                 spectra = pvlib.spectrum.spectrl2(
                     apparent_zenith=zenith, aoi=zenith, surface_tilt=0, ground_albedo=cfg["albedo"],
@@ -116,7 +127,10 @@ def get_nir_data():
                 "pwv": round(pwv, 2), "nir": round(nir, 2)
             })
             
-        return {"status": "active", "update_time": now.strftime("%H:%M:%S"), "data": results}
+        final_response = {"status": "active", "update_time": now.strftime("%Y-%m-%d %H:%M:%S"), "data": results}
+        CACHE_DATA = final_response
+        CACHE_TIME = now
+        return final_response
     except Exception as e:
         return {"error": str(e)}
 
