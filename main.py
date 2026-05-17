@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse # 🌟 引入快取標頭控制器
 import requests
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -18,7 +19,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 🌟 全台 22 縣市對應表 (已優化名稱匹配)
 ALL_REGIONS = {
     "基隆": {"display": "基隆市", "lat": 25.133, "lon": 121.741, "albedo": 0.15},
     "臺北": {"display": "臺北市", "lat": 25.037, "lon": 121.514, "albedo": 0.15},
@@ -48,38 +48,47 @@ MOENV_API_KEY = "6eb2e439-39c7-4e22-ae2c-bd1fcff8959b"
 CACHE_DATA = None
 CACHE_TIME = None
 
+def get_uvi_text(val):
+    if val < 3: return "低量級"
+    if val < 6: return "中量級"
+    if val < 8: return "高量級"
+    if val < 11: return "過量級"
+    return "危險級"
+
 def get_nir_data():
     global CACHE_DATA, CACHE_TIME
     tw_tz = timezone(timedelta(hours=8))
     now = datetime.now(tw_tz)
     
     if not (5 <= now.hour <= 20):
-        return {"status": "night_mode", "update_time": now.strftime("%Y-%m-%d %H:%M:%S"), "data": []}
+        return JSONResponse(
+            content={"status": "night_mode", "update_time": now.strftime("%Y-%m-%d %H:%M:%S"), "data": []},
+            headers={"Cache-Control": "public, max-age=1800"}
+        )
 
+    # 伺服器端記憶體快取
     if CACHE_DATA and CACHE_TIME and (now - CACHE_TIME).total_seconds() < 1800:
-        return CACHE_DATA
+        return JSONResponse(content=CACHE_DATA, headers={"Cache-Control": "public, max-age=1800"})
 
-    # 1. 抓取 PM2.5 (大氣混濁度)
     pm25_map = {}
     try:
         res = requests.get(f"https://data.moenv.gov.tw/api/v2/aqx_p_432?api_key={MOENV_API_KEY}&limit=100&format=JSON", timeout=5, verify=False)
         if res.status_code == 200:
             for r in res.json().get("records", []):
                 if r.get("county") and r.get("pm2.5"):
-                    c = r.get("county")
+                    c = r.get("county").replace("台", "臺")
                     if c not in pm25_map: pm25_map[c] = []
                     pm25_map[c].append(float(r.get("pm2.5")))
             pm25_map = {c: sum(v)/len(v) for c, v in pm25_map.items()}
     except: pass
 
-    # 2. 🌟 抓取 UVI 紫外線指數
     uv_map = {}
     try:
         uv_res = requests.get(f"https://data.moenv.gov.tw/api/v2/uv_s_01?api_key={MOENV_API_KEY}&limit=100&format=JSON", timeout=5, verify=False)
         if uv_res.status_code == 200:
             for r in uv_res.json().get("records", []):
                 if r.get("county") and r.get("uvi"):
-                    c = r.get("county")
+                    c = r.get("county").replace("台", "臺")
                     try:
                         val = float(r.get("uvi"))
                         if val >= 0:
@@ -89,7 +98,6 @@ def get_nir_data():
             uv_map = {c: sum(v)/len(v) for c, v in uv_map.items()}
     except: pass
 
-    # 3. 抓取氣象實況與計算 NIR
     url = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/O-A0001-001"
     try:
         response = requests.get(url, params={"Authorization": CWA_API_KEY, "format": "JSON"}, verify=False)
@@ -97,7 +105,7 @@ def get_nir_data():
         
         results = []
         for station in stations:
-            raw_name = station.get("StationName")
+            raw_name = station.get("StationName", "").replace("台", "臺")
             match_key = next((k for k in ALL_REGIONS.keys() if k in raw_name), None)
             if not match_key: continue
             
@@ -105,8 +113,15 @@ def get_nir_data():
             if any(r['city'] == cfg['display'] for r in results): continue
 
             elements = station.get("WeatherElement", {})
-            temp = float(elements.get("AirTemperature", 0))
-            humidity = float(elements.get("RelativeHumidity", 0))
+            
+            # 🌟 修正 -99 儀器維護錯誤
+            raw_temp = float(elements.get("AirTemperature", -99))
+            temp_display = "維護中" if raw_temp <= -50 else round(raw_temp, 1)
+            math_temp = 25.0 if raw_temp <= -50 else raw_temp
+
+            humidity = float(elements.get("RelativeHumidity", 80))
+            if humidity < 0: humidity = 80.0
+            
             weather = elements.get("Weather", "")
             rain = float(elements.get("Now", {}).get("Precipitation", 0.0))
 
@@ -115,13 +130,12 @@ def get_nir_data():
             elif "陰" in weather: trans = 0.45
             elif "多雲" in weather: trans = 0.75
 
-            pwv = pvlib.atmosphere.gueymard94_pw(temp, humidity)
+            pwv = pvlib.atmosphere.gueymard94_pw(math_temp, humidity)
             time_idx = pd.DatetimeIndex([station.get("ObsTime", {}).get("DateTime")])
             solpos = pvlib.solarposition.get_solarposition(time_idx, cfg["lat"], cfg["lon"])
             zenith = solpos['apparent_zenith'].iloc[0]
             
-            # 取得該縣市的 UV，若無資料則依天頂角給予安全估算值
-            county_for_uv = cfg["display"].replace("臺", "台")
+            county_for_uv = cfg["display"]
             uvi_val = uv_map.get(county_for_uv)
             if uvi_val is None:
                 uvi_val = max(0, (90 - zenith) / 10 * trans) if zenith < 90 else 0
@@ -141,17 +155,20 @@ def get_nir_data():
             
             results.append({
                 "city": cfg["display"], 
-                "temp": temp, 
-                "humidity": humidity,
+                "temp": temp_display, # 輸出字串 "維護中" 或數字
+                "humidity": round(humidity),
                 "pwv": round(pwv, 2), 
                 "nir": round(nir, 2),
-                "uvi": round(uvi_val, 1) # 🌟 輸出 UV 指數
+                "uvi": round(uvi_val, 1),
+                "uvi_text": get_uvi_text(uvi_val) # 🌟 輸出紫外線等級文字
             })
             
         final_response = {"status": "active", "update_time": now.strftime("%Y-%m-%d %H:%M:%S"), "data": results}
         CACHE_DATA = final_response
         CACHE_TIME = now
-        return final_response
+        
+        # 🌟 回傳並加上 Cache-Control，強制 CDN/瀏覽器快取 30 分鐘
+        return JSONResponse(content=final_response, headers={"Cache-Control": "public, max-age=1800"})
     except Exception as e:
         return {"error": str(e)}
 
